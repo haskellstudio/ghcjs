@@ -526,9 +526,7 @@ initPackageDB :: B ()
 initPackageDB = do
   msg info "creating package databases"
   initDB "--global" <^> beLocations . blGlobalDB
-  traverseOf_ _Just initUser <^> beLocations . blUserDBDir
   where
-    initUser dir = rm_f (dir </> "package.conf") >> initDB "--user" (dir </> "package.conf.d")
     initDB dbName db = do
       rm_rf db >> mkdir_p db
       ghcjs_pkg_ ["init", toTextI db] `catchAny_` return ()
@@ -552,29 +550,22 @@ installDevelopmentTree = subTop $ do
   msgD info $ "preparing development boot tree"
   checkpoint' "ghcjs-boot-git" "ghcjs-boot repository already cloned and prepared" $ do
     testGit "ghcjs-boot" >>= \case
-      Just False -> failWith "ghcjs-boot already exists and is not a git repository"
-      Just True  -> do
-        msg info "ghcjs-boot repository already exists but checkpoint not reached, cleaning first, then cloning"
-        rm_rf "ghcjs-boot"
+      Just _ -> do
+        msg info "ghcjs-boot repository already exists; initializing ghcjs-boot"
         initGhcjsBoot
       Nothing    -> do
         msgD info "cloning ghcjs-boot git repository"
         initGhcjsBoot
   checkpoint' "shims-git" "shims repository already cloned" $ do
     testGit "shims" >>= \case
-      Just False -> failWith "shims already exists and is not a git repository"
-      Just True  -> do
-        msgD info "shims repository already exists but checkpoint not reached, cleaning first, then cloning"
-        rm_rf "shims"
-        cloneGit shimsDescr "shims" bsrcShimsDevBranch bsrcShimsDev
+      Just _ -> do
+        msgD info "shims repository already exists; moving on"
       Nothing    -> do
         msgD info "cloning shims git repository"
         cloneGit shimsDescr "shims" bsrcShimsDevBranch bsrcShimsDev
   where
     initGhcjsBoot = sub $ do
-      cloneGit bootDescr "ghcjs-boot"  bsrcBootDevBranch bsrcBootDev
       cd "ghcjs-boot"
-      git_ ["submodule", "update", "--init", "--recursive"]
       mapM_ patchPackage =<< allPackages
       preparePrimops
       buildGenPrim
@@ -1050,7 +1041,7 @@ cabalStage1 pkgs = sub $ do
   globalFlags <- cabalGlobalFlags
   flags <- cabalInstallFlags (length pkgs == 1)
   let args = globalFlags ++ ("install" : pkgs) ++
-             [ "--solver=topdown" -- the modular solver refuses to install stage1 packages
+             [ "--allow-boot-library-installs"
              ] ++ map ("--configure-option="<>) configureOpts ++ flags
   checkInstallPlan pkgs args
   cabal_ args
@@ -1071,7 +1062,7 @@ cabalInstall pkgs = do
 -- uses somewhat fragile parsing of --dry-run output, find a better way
 checkInstallPlan :: [Package] -> [Text] -> B ()
 checkInstallPlan pkgs opts = do
-  plan <- cabal (opts ++ ["-v2", "--dry-run"])
+  plan <- cabal (opts ++ ["-vverbose+nowrap", "--dry-run"])
   when (hasReinstalls plan || hasUnexpectedInstalls plan || hasNewVersion plan) (err plan)
   where
     hasReinstalls = T.isInfixOf "(reinstall)"   -- reject reinstalls
@@ -1110,14 +1101,14 @@ cabalInstallFlags parmakeGhcjs = do
            , "--avoid-reinstalls"
            , "--builddir",      "dist"
            , "--with-compiler", ghcjs ^. pgmLocText
+           , "--with-gcc",      "@CC@"
            , "--with-hc-pkg",   ghcjsPkg ^. pgmLocText
-           , "--prefix",        toTextI instDir
+           , "--prefix",        "@PREFIX@"
+           , "--libdir",        "$prefix/lib/$compiler"
+           , "--libsubdir",     "$pkgid"
            , bool haddock "--enable-documentation" "--disable-documentation"
            , "--haddock-html"
--- workaround for hoogle support being broken in haddock for GHC 7.10RC1
-#if !(__GLASGOW_HASKELL__ >= 709)
            , "--haddock-hoogle"
-#endif
            , "--haddock-hyperlink-source"
 -- don't slow down Windows builds too much, on other platforms we get this more
 -- or less for free, thanks to dynamic-too
